@@ -767,6 +767,30 @@ def test_ranker_float_error_ex3():
     [response, message] = _do_arax_query(query)
     assert response.status == 'OK'
 
+def test_semmeddb_combine():
+    query = {"operations": {"actions": [
+        "create_message",
+        "add_qnode(name=CHLORPROPAMIDE, key=n0)",
+        "add_qnode(categories=biolink:Protein, key=n1)",
+        "add_qedge(subject=n0, object=n1, key=e0)",
+        "expand(kp=RTX-KG2)",
+        "resultify()",
+        "return(message=true, store=false)"
+    ]}}
+    [response, message] = _do_arax_query(query)
+    #return response, message
+    assert response.status == 'OK'
+    conbinded_result_bindings = 0
+    for result in message.results:
+        for eb_key, ebindings in result.edge_bindings:
+            for ebinding in ebindings:
+                if ebinding.startswith("COMBINED"):
+                    combinded_result_bindings += 1
+                    assert ebinding in message.knowledge_graph.edges
+    assert combinded_result_bindings > 0
+
+
+
 
 # Not working yet
 # def test_example_3_kg2():
