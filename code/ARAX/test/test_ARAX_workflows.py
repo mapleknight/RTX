@@ -778,16 +778,15 @@ def test_semmeddb_combine():
         "return(message=true, store=false)"
     ]}}
     [response, message] = _do_arax_query(query)
-    #return response, message
     assert response.status == 'OK'
-    conbinded_result_bindings = 0
+    combined_result_bindings = 0
     for result in message.results:
-        for eb_key, ebindings in result.edge_bindings:
+        for eb_key, ebindings in result.edge_bindings.items():
             for ebinding in ebindings:
-                if ebinding.startswith("COMBINED"):
-                    combinded_result_bindings += 1
-                    assert ebinding in message.knowledge_graph.edges
-    assert combinded_result_bindings > 0
+                if ebinding.id.startswith("COMBINED"):
+                    combined_result_bindings += 1
+                    assert ebinding.id in message.knowledge_graph.edges
+    assert combined_result_bindings > 0
 
 
 
