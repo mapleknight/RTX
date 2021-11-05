@@ -526,6 +526,8 @@ and [frobenius norm](https://en.wikipedia.org/wiki/Matrix_norm#Frobenius_norm).
         message = response.envelope.message
         self.message = message
 
+        # average types: 'all', 'median', 'mean', 'hmean', 'gmean', and 'Linf'
+        avg_type = "mean"
 
         # Combine SemMedDB edges into one and filter out the old ones
         result_num = 0
@@ -568,6 +570,7 @@ and [frobenius norm](https://en.wikipedia.org/wiki/Matrix_norm#Frobenius_norm).
                         new_binding_id = f"COMBINED_{num_semmed_edges}_{eb_key}_semmedb_edges_{subject_key}_{object_key}_{result_num}"
                         combined_edge_attributes = []
                         combined_publications = set()
+                        individual_publications = []
                         combined_sentences = {}
                         #Loop through the edges and make the new combined attribute list
                         for ebinding_id, semmed_db_edge in semmed_db_edges[eb_key][(kg_edge.subject,kg_edge.object)].items():
@@ -575,6 +578,7 @@ and [frobenius norm](https://en.wikipedia.org/wiki/Matrix_norm#Frobenius_norm).
                                 if attribute.attribute_type_id == 'biolink:publications':
                                     if type(attribute.value) == list:
                                         combined_publications = combined_publications.union(set(attribute.value))
+                                        individual_publications.append(set(attribute.value))
                                 elif attribute.attribute_type_id == 'bts:sentence':
                                     if type(attribute.value) == dict:
                                         for sentence_key, sentence in attribute.value.items():
@@ -588,15 +592,39 @@ and [frobenius norm](https://en.wikipedia.org/wiki/Matrix_norm#Frobenius_norm).
                             if 'object score' in publication_metadata and publication_metadata['object score'] < 700:
                                 if publication_id in combined_publications:
                                     combined_publications.remove(publication_id)
+                                    for idx in range(len(individual_publications)):
+                                        individual_publications[idx].remove(publication_id)
                                     pubs_to_remove.add(publication_id)
                             elif 'subject score' in publication_metadata and publication_metadata['subject score'] < 700:
                                 if publication_id in combined_publications:
                                     combined_publications.remove(publication_id)
+                                    for idx in range(len(individual_publications)):
+                                        individual_publications[idx].remove(publication_id)
                                     pubs_to_remove.add(publication_id)
                         #Remove the filtered publications from the sentences
                         for publication_id in pubs_to_remove:
                             del combined_sentences[publication_id]
+                        #Get individual lengths of publications
+                        publication_counts = [len(x) for x in individual_publications]
                         #Combine the publication list
+                        if avg_type == "all":
+                            pass
+                        elif avg_type == "mean":
+                            idx = math.ceil(np.mean(publication_counts))
+                            combined_publications = combined_publications[:idx]
+                        elif avg_type == "median":
+                            idx = math.ceil(np.median(publication_counts))
+                            combined_publications = combined_publications[:idx]
+                        elif avg_type == "hmean":
+                            idx = math.ceil(scipy.stats.mstats.hmean(publication_counts))
+                            combined_publications = combined_publications[:idx]
+                        elif avg_type == "gmean":
+                            idx = math.ceil(scipy.stats.mstats.gmean(publication_counts))
+                            combined_publications = combined_publications[:idx]
+                        elif avg_type == "Linf":
+                            idx = math.ceil(np.linalg.norm(publication_counts,ord=np.inf))
+                            combined_publications = combined_publications[:idx]
+
                         combined_publication_attribute = Attribute(value=list(combined_publications),attribute_type_id='biolink:publications',value_type_id='biolink:Uriorcurie')
                         combined_edge_attributes.append(combined_publication_attribute)
                         #Combine the sentences
