@@ -4,7 +4,7 @@ var qgids = [];
 var cyobj = [];
 var cytodata = [];
 var predicates = {};
-var all_predicates = {};
+var all_predicates = [];
 var all_nodes = {};
 var summary_table_html = '';
 var summary_tsv = [];
@@ -16,19 +16,25 @@ var UIstate = {};
 // defaults
 var base = "";
 var baseAPI = base + "api/arax/v1.2";
+var araxQuery = '';
 
 // possibly imported by calling page (e.g. index.html)
 if (typeof config !== 'undefined') {
     if (config.base)
 	base = config.base;
+    if (config.query_endpoint)
+	araxQuery = config.query_endpoint;
     if (config.baseAPI)
 	baseAPI = config.baseAPI;
 }
+if (!araxQuery)
+    araxQuery = baseAPI + '/query';
 
 var providers = {
-    "ARAX": { "url" : baseAPI },
-    "ARS" : { "url" : "https://ars.transltr.io/ars/api/submit" },
-    "EXT" : { "url" : "https://translator.broadinstitute.org/molepro/trapi/v1.2" }
+    "ARAX" : { "url" : baseAPI },
+    "ARAXQ": { "url" : araxQuery },
+    "ARS"  : { "url" : "https://ars.transltr.io/ars/api/submit" },
+    "EXT"  : { "url" : "https://translator.broadinstitute.org/molepro/trapi/v1.2" }
 };
 
 // these attributes are floats; truncate them
@@ -54,8 +60,12 @@ const attributes_to_truncate = [
 
 function main() {
     UIstate["submitter"] = 'ARAX GUI';
-    UIstate["timeout"] = '';
+    UIstate['autorefresh'] = true;
+    UIstate["timeout"] = '30';
+    UIstate["pruning"] = '50';
+    UIstate["pid"] = null;
     UIstate["version"] = checkUIversion(false);
+    UIstate["maxresults"] = 1000;
     document.getElementById("menuapiurl").href = providers["ARAX"].url + "/ui/";
 
     load_meta_knowledge_graph();
@@ -71,7 +81,7 @@ function main() {
 	document.getElementById(prov+"_url").value = providers[prov].url;
 	document.getElementById(prov+"_url_button").disabled = true;
     }
-    for (var setting of ["submitter","timeout"]) {
+    for (var setting of ["submitter","timeout","pruning","maxresults"]) {
 	document.getElementById(setting+"_url").value = UIstate[setting];
 	document.getElementById(setting+"_url_button").disabled = true;
     }
@@ -94,7 +104,7 @@ function main() {
     }
     else {
 	add_cyto(99999);
-	add_cyto(0);
+	//add_cyto(0); // now done on user click
     }
 
     if (syn) {
@@ -202,8 +212,10 @@ function reset_vars() {
     display_qg_popup('node','hide');
     display_qg_popup('edge','hide');
     document.getElementById("queryplan_container").innerHTML = "";
-    if (document.getElementById("queryplan_stream"))
+    if (document.getElementById("queryplan_stream")) {
+	document.getElementById("queryplan_streamhead").remove();
 	document.getElementById("queryplan_stream").remove();
+    }
     document.getElementById("result_container").innerHTML = "";
     document.getElementById("summary_container").innerHTML = "";
     document.getElementById("provenance_container").innerHTML = "";
@@ -405,6 +417,11 @@ function postQuery_ARAX(qtype,queryObj) {
 	    queryObj.query_options = {};
 	queryObj.query_options['kp_timeout'] = UIstate["timeout"];
     }
+    if (UIstate["pruning"]) {
+	if (!queryObj.query_options)
+	    queryObj.query_options = {};
+	queryObj.query_options['prune_threshold'] = UIstate["pruning"];
+    }
     var cmddiv = document.createElement("div");
     cmddiv.id = "cmdoutput";
     statusdiv.appendChild(cmddiv);
@@ -439,7 +456,7 @@ function postQuery_ARAX(qtype,queryObj) {
     sesame('openmax',statusdiv);
 
     add_to_dev_info("Posted to QUERY",queryObj);
-    fetch(providers["ARAX"].url + "/query", {
+    fetch(providers["ARAXQ"].url, {
 	method: 'post',
 	body: JSON.stringify(queryObj),
 	headers: { 'Content-type': 'application/json' }
@@ -517,6 +534,7 @@ function postQuery_ARAX(qtype,queryObj) {
 				div = document.getElementById("queryplan_stream");
 			    else {
 				div = document.createElement("div");
+				div.id = "queryplan_streamhead";
 				div.className = 'statushead';
 				div.appendChild(document.createTextNode("Expansion Progress"));
 				document.getElementById("status_container").before(div);
@@ -531,6 +549,10 @@ function postQuery_ARAX(qtype,queryObj) {
 			    div.appendChild(document.createElement("br"));
 			    render_queryplan_table(jsonMsg, div);
 			    div.appendChild(document.createElement("br"));
+			}
+                        else if (jsonMsg.pid) {
+			    UIstate["pid"] = jsonMsg;
+			    display_kill_button();
 			}
 			else {
 			    console.log("bad msg:"+JSON.stringify(jsonMsg,null,2));
@@ -558,6 +580,9 @@ function postQuery_ARAX(qtype,queryObj) {
 	    pre.id = "responseJSON";
 	    pre.appendChild(document.createTextNode(JSON.stringify(data,null,2)));
 	    dev.appendChild(pre);
+
+	    if (document.getElementById("killquerybutton"))
+		document.getElementById("killquerybutton").remove();
 
 	    document.getElementById("progressBar").style.width = "800px";
 	    if (data.status == "OK")
@@ -590,6 +615,9 @@ function postQuery_ARAX(qtype,queryObj) {
 
 	})
         .catch(function(err) {
+            if (document.getElementById("killquerybutton"))
+		document.getElementById("killquerybutton").remove();
+
 	    statusdiv.innerHTML += "<br><span class='error'>An error was encountered while contacting the server ("+err+")</span>";
 	    document.getElementById("devdiv").innerHTML += "------------------------------------ error with parsing QUERY:<br>"+err;
 	    sesame('openmax',statusdiv);
@@ -600,6 +628,67 @@ function postQuery_ARAX(qtype,queryObj) {
             there_was_an_error();
 	});
 }
+
+function display_kill_button() {
+    var button = document.createElement("input");
+    button.id = 'killquerybutton';
+    button.className = 'questionBox button';
+    button.style.background = "#c40";
+    button.type = 'button';
+    button.name = 'action';
+    button.value = 'Terminate Query!';
+    button.title = 'Kill this request (pid='+UIstate["pid"].pid+')';
+    button.setAttribute('onclick', 'kill_query();');
+
+    document.getElementById("status_container").before(button);
+}
+
+function kill_query() {
+    if (!UIstate["pid"].pid || !UIstate["pid"].authorization) {
+        document.getElementById("killquerybutton").replaceWith('No PID or authorization; cannot terminate query');
+	return;
+    }
+
+    fetch(providers["ARAX"].url + "/status?terminate_pid="+UIstate["pid"].pid+"&authorization="+UIstate["pid"].authorization)
+        .then(response => {
+	    if (response.ok) return response.json();
+	    else throw new Error('Something went wrong with termination...');
+	})
+        .then(data => {
+            if (data.status == 'OK') {
+		document.getElementById("killquerybutton").id = 'killquerybuttondead';
+		addCheckBox(document.getElementById("killquerybuttondead"),true);
+		var timeout = setTimeout(function() { document.getElementById("killquerybuttondead").remove(); } , 1500 );
+		statusdiv.innerHTML += "<br><span class='error'>Query terminated by user</span>";
+		if (document.getElementById("cmdoutput")) {
+                    var cmddiv = document.getElementById("cmdoutput");
+		    cmddiv.appendChild(document.createElement("br"));
+		    cmddiv.appendChild(document.createTextNode(data.description));
+                    cmddiv.appendChild(document.createElement("br"));
+		    cmddiv.scrollTop = cmddiv.scrollHeight;
+		    for (var e of document.getElementsByClassName("working")) {
+			e.classList.remove('working');
+			e.classList.remove('p5');
+			e.classList.add('barerror');
+		    }
+		    document.getElementById("progressBar").classList.add("barerror");
+		    document.getElementById("progressBar").innerHTML += " (terminated)\u00A0\u00A0";
+		}
+	    }
+            else if (data.status == 'ERROR') {
+		document.getElementById("killquerybutton").after('Cannot terminate query');
+		console.warn('Query termination attempt error: '+data.description);
+	    }
+	    else throw new Error('Something went wrong while attempting to terminate query...');
+	})
+        .catch(error => {
+	    var span = document.createElement("span");
+	    span.className = 'error';
+	    span.innerHTML = error;
+	    document.getElementById("killquerybutton").after(span);
+	});
+}
+
 
 function lookup_synonym(syn,open) {
     document.getElementById("newsynonym").value = syn.trim();
@@ -848,24 +937,27 @@ function getIdStats(id) {
 function checkRefreshARS() {
     document.getElementById("ars_refresh").dataset.count += "x";
     var moon = 127765;
-    if (document.getElementById("ars_refresh").dataset.count.length == document.getElementById("ars_refresh").dataset.total) {
-	document.getElementById("ars_refresh").innerHTML = "&#"+moon;
+    if (UIstate['autorefresh'] && document.getElementById("ars_refresh").dataset.count.length == document.getElementById("ars_refresh").dataset.total) {
+	document.getElementById("ars_refresh_anim").innerHTML = "&#"+moon;
 	var timetogo = 8;
 	var timeout = setInterval(countdown, 375);
 	function countdown() {
 	    if (timetogo == 0) {
 		clearInterval(timeout);
-                sendId(true);
-		document.getElementById("ars_refresh").innerHTML = "";
+		if (UIstate['autorefresh'])
+                    sendId(true);
+		document.getElementById("ars_refresh_anim").innerHTML = "";
 	    }
 	    else {
 		moon--;
 		if (moon == 127760) moon = 127768;
-		document.getElementById("ars_refresh").innerHTML = "&#"+moon;
+                if (UIstate['autorefresh'])
+		    document.getElementById("ars_refresh_anim").innerHTML = "&#"+moon;
+		else
+		    timetogo = 1; // stop reloads
 		timetogo--;
 	    }
 	}
-
     }
 }
 
@@ -878,6 +970,7 @@ function sendId(is_ars_refresh) {
 	pasteId(id);
 	if (!id) return;
 
+	UIstate['autorefresh'] = true;
 	reset_vars();
 	if (cyobj[99999]) {cyobj[99999].elements().remove();}
 	input_qg = { "edges": {}, "nodes": {} };
@@ -892,7 +985,10 @@ function sendId(is_ars_refresh) {
 	document.getElementById("numresults_"+id).appendChild(getAnimatedWaitBar(null));
     }
 
-    retrieve_response(providers["ARAX"].url+"/response/"+id,id,"all");
+    if (id.startsWith("http"))
+	retrieve_response(id,id,"all");
+    else
+	retrieve_response(providers["ARAX"].url+"/response/"+id,id,"all");
     if (!is_ars_refresh)
 	openSection('query');
 }
@@ -924,7 +1020,19 @@ function process_ars_message(ars_msg, level) {
 	span.dataset.total = ars_msg.status == 'Done' ? 999999 : ars_msg["children"].length + 1;
 	span.dataset.count = '';
 	span.dataset.msgid = ars_msg.message;
-	span.appendChild(document.createTextNode("Auto-reload: " + (ars_msg.status == 'Done' ? "OFF" : "ON")));
+        if (UIstate['autorefresh'])
+	    span.appendChild(document.createTextNode("Auto-reload: " + (ars_msg.status == 'Done' ? "OFF" : "ON")));
+	if (ars_msg.status != 'Done') {
+	    span.title = "Click to Stop Auto-Refresh";
+	    span.className = "clq";
+	    span.setAttribute('onclick', 'UIstate["autorefresh"] = false; document.getElementById("ars_refresh").innerHTML = "";');
+	}
+	div2.appendChild(span);
+
+	span = document.createElement("span");
+	span.id = 'ars_refresh_anim';
+	span.style.float = 'right';
+	span.style.marginRight = '20px';
 	div2.appendChild(span);
 
 	var div2 = document.createElement("div");
@@ -1038,10 +1146,12 @@ function process_response(resp_url, resp_id, type, jsonObj2) {
 	link.style.left = "30px";
 	link.appendChild(document.createTextNode("[ view raw json response \u2197 ]"));
 	devdiv.appendChild(link);
-	var pre = document.createElement("pre");
-	pre.id = 'responseJSON';
-	pre.textContent = JSON.stringify(jsonObj2,null,2);
-	devdiv.appendChild(pre);
+	devdiv.appendChild(document.createElement("br"));
+	// remove, for now, as it may gobble up way too much memory and is already available via link anyway:
+	//var pre = document.createElement("pre");
+	//pre.id = 'responseJSON';
+	//pre.textContent = JSON.stringify(jsonObj2,null,2);
+	//devdiv.appendChild(pre);
     }
 
     if (jsonObj2["children"]) {
@@ -1197,10 +1307,13 @@ function retrieve_response(resp_url, resp_id, type) {
     var statusdiv = document.getElementById("statusdiv");
     statusdiv.appendChild(document.createTextNode("Retrieving response id = " + resp_id));
 
+    if (resp_id.startsWith("http"))
+	resp_id = "URL:"+hashCode(resp_id);
+
     if (response_cache[resp_id]) {
         if (document.getElementById("istrapi_"+resp_id))
 	    document.getElementById("istrapi_"+resp_id).innerHTML = 'rendering...';
-	statusdiv.appendChild(document.createTextNode(" ...from cache"));
+	statusdiv.appendChild(document.createTextNode(" ...from cache ("+resp_id+")"));
 	statusdiv.appendChild(document.createElement("hr"));
 	sesame('openmax',statusdiv);
 	// 50ms timeout allows css animation to start before processing locks the thread
@@ -1213,7 +1326,7 @@ function retrieve_response(resp_url, resp_id, type) {
 
     var xhr = new XMLHttpRequest();
     xhr.open("get",  resp_url, true);
-    xhr.setRequestHeader('Content-Type', 'application/json; charset=UTF-8');
+    //xhr.setRequestHeader('Content-Type', 'application/json; charset=UTF-8');
     xhr.send(null);
     xhr.onloadend = function() {
 	if ( xhr.status == 200 ) {
@@ -1223,7 +1336,19 @@ function retrieve_response(resp_url, resp_id, type) {
 	}
 	else if ( xhr.status == 404 ) {
 	    update_response_stats_on_error(resp_id,'N/A',true);
-	    statusdiv.innerHTML += "<br>Response with id=<span class='error'>"+resp_id+"</span> was not found (404).";
+
+	    try {
+		var jsonResp = JSON.parse(xhr.responseText);
+		if (!jsonResp.detail) throw new Error('no detail');
+                statusdiv.innerHTML += "<br><span class='error'>"+jsonResp.detail+"</span>";
+	    }
+	    catch(e) {
+		if (resp_id.startsWith("URL:"))
+		    statusdiv.innerHTML += "<br>No response found at <span class='error'>"+resp_url+"</span> (404).";
+		else
+		    statusdiv.innerHTML += "<br>Response with id=<span class='error'>"+resp_id+"</span> was not found (404).";
+
+	    }
 	    sesame('openmax',statusdiv);
 	    there_was_an_error();
 	}
@@ -1377,11 +1502,19 @@ function render_response(respObj,dispjson) {
 	}
 	else {
 	    var rtext = respObj.message.results.length == 1 ? " result" : " results";
+	    if (respObj.total_results_count && respObj.total_results_count > respObj.message.results.length)
+		rtext += " (truncated from a total of " + respObj.total_results_count + ")";
 	    var h2 = document.createElement("h2");
 	    h2.appendChild(document.createTextNode(respObj.message.results.length + rtext));
+	    if (respObj.message.results.length > UIstate["maxresults"]) {
+		h2.appendChild(document.createTextNode(" (*only showing first "+UIstate["maxresults"]+") [ ? ]"));
+		h2.title = "* You can change this value in the Settings section on the left menu";
+	    }
 	    document.getElementById("result_container").appendChild(h2);
 
 	    document.getElementById("menunumresults").innerHTML = respObj.message.results.length;
+            if (respObj.message.results.length > UIstate["maxresults"])
+		document.getElementById("menunumresults").innerHTML += '*';
             document.getElementById("menunumresults").classList.add("numnew");
 	    document.getElementById("menunumresults").classList.remove("numold");
 
@@ -1390,6 +1523,10 @@ function render_response(respObj,dispjson) {
 	    if (respObj.reasoner_id)
 		respreas = respObj.reasoner_id;
 	    process_results(respObj.message["results"],respObj.message["knowledge_graph"],respObj["schema_version"],respreas);
+
+
+            if (respObj.message.results.length > UIstate["maxresults"])
+		document.getElementById("result_container").appendChild(h2.cloneNode(true));
 
 	    if (document.getElementById("numresults_"+respObj.araxui_response)) {
 		document.getElementById("numresults_"+respObj.araxui_response).innerHTML = '';
@@ -1598,7 +1735,7 @@ function render_response(respObj,dispjson) {
 	document.getElementById("provenance_container").innerHTML += "<h2>Provenance information not available for this response</h2>";
 
 
-    add_cyto(0);
+    //add_cyto(0); // now done on user click
     add_cyto(99999);
     statusdiv.appendChild(document.createTextNode("done."));
     statusdiv.appendChild(document.createElement("br"));
@@ -2044,6 +2181,7 @@ function process_graph(gne,gid,trapi) {
 			    "_names"     : gnode.ids ? gnode.ids.slice() : [], // make a copy!
 			    "_desc"      : gnode.description,
 			    "categories" : gnode.categories ? gnode.categories : [],
+			    "option_group_id" : gnode.option_group_id ? gnode.option_group_id : null,
 			    "constraints": gnode.constraints ? gnode.constraints : []
 			  };
 
@@ -2057,6 +2195,8 @@ function process_graph(gne,gid,trapi) {
 	    var tmpdata = { "subject"    : gedge.subject,
 			    "object"     : gedge.object,
 			    "predicates" : gedge.predicates ? gedge.predicates : [],
+			    "exclude"    : gedge.exclude ? gedge.exclude : false,
+			    "option_group_id" : gedge.option_group_id ? gedge.option_group_id : null,
 			    "constraints": gedge.constraints ? gedge.constraints : []
 			  };
 	    input_qg.edges[id] = tmpdata;
@@ -2117,6 +2257,9 @@ function process_results(reslist,kg,trapi,mainreasoner) {
 	else
             add_to_summary([cnf,ess], num);
 
+	// avoid madness
+	if (num > UIstate["maxresults"]) continue;
+
 	var rsrc = mainreasoner;
 	if (result.reasoner_id)
 	    rsrc = result.reasoner_id;
@@ -2135,7 +2278,8 @@ function process_results(reslist,kg,trapi,mainreasoner) {
 	    (rsrc=="ImProving")? "simp" :
 	    "p0";
 
-        var div = document.createElement("div");
+
+	var div = document.createElement("div");
         div.id = 'h'+num+'_div';
 	div.title = 'Click to expand / collapse result '+num;
         div.className = 'accordion';
@@ -2209,17 +2353,8 @@ function process_results(reslist,kg,trapi,mainreasoner) {
 	td.appendChild(link);
         td.appendChild(document.createElement("br"));
 
-	var span = document.createElement("span");
-	span.style.marginTop = "80px";
-	span.style.display = "inline-block";
-	span.className = "explevel p9";
-	span.style.fontSize = "x-small";
-	span.title = "new: resize graph window!";
-	span.appendChild(document.createTextNode("New"));
-        td.appendChild(span);
-        td.appendChild(document.createElement("br"));
-
 	link = document.createElement("a");
+	link.style.marginTop = "80px";
 	link.title = 'small graph';
 	link.setAttribute('onclick', 'cyresize('+num+',"s");');
 	link.appendChild(document.createTextNode("s"));
@@ -2268,15 +2403,6 @@ function process_results(reslist,kg,trapi,mainreasoner) {
         link.appendChild(document.createTextNode("Click on a node or edge to get details, or click on graph background to see a full list of nodes and edges for this result"));
         div2.appendChild(link);
 
-	var span = document.createElement("span");
-	span.style.display = "inline-block";
-	span.style.marginLeft = '10px';
-	span.className = "explevel p9";
-	span.style.fontSize = "x-small";
-	span.title = "new: full list of nodes and edges!";
-	span.appendChild(document.createTextNode("New"));
-        div2.appendChild(span);
-
 	td.appendChild(div2);
 	tr.appendChild(td);
 
@@ -2324,6 +2450,7 @@ function process_results(reslist,kg,trapi,mainreasoner) {
 
 
 function add_cyto(i) {
+    // once rendered, data is set to null so as to only do this once per graph
     if (cytodata[i] == null) return;
 
     var num = Number(i);// + 1;
@@ -2675,7 +2802,7 @@ function display_attribute(tab, att, semmeddb) {
                     var a = document.createElement("a");
                     a.className = 'attvalue';
                     a.target = '_blank';
-                    a.href = "https://www.ncbi.nlm.nih.gov/pubmed/" + val.split(":")[1];
+                    a.href = "https://pubmed.ncbi.nlm.nih.gov/" + val.split(":")[1] + '/';
 		    a.title = 'View in PubMed';
                     a.innerHTML = val;
                     cell.appendChild(a);
@@ -2761,6 +2888,7 @@ function display_attribute(tab, att, semmeddb) {
 	row.appendChild(cell);
 
 	cell = document.createElement("td");
+	cell.className = 'subatts';
 	var subatts_table = document.createElement("table");
 	subatts_table.className = 't100';
 
@@ -2886,6 +3014,7 @@ function qg_node(id,render) {
 	newqnode.categories = [];
 	newqnode.constraints = [];
 	newqnode.is_set = false;
+	newqnode.option_group_id = null;
 	newqnode._names = [];
 
 	input_qg.nodes[id] = newqnode;
@@ -2998,6 +3127,22 @@ function qg_node(id,render) {
     }
 
     document.getElementById('nodeeditor_set').checked = input_qg.nodes[id].is_set;
+
+    htmlnode = document.getElementById('nodeeditor_optgpid');
+    htmlnode.innerHTML = '';
+    if (input_qg.nodes[id].option_group_id) {
+	htmlnode.appendChild(document.createTextNode(input_qg.nodes[id].option_group_id));
+
+	var link = document.createElement("a");
+	link.style.float = "right";
+	link.href = 'javascript:qg_remove_optgpid_from_qnode();';
+	link.title = "remove Option Group ID from this Qnode";
+	link.appendChild(document.createTextNode(" [ remove ] "));
+	htmlnode.appendChild(link);
+    }
+    else
+	input_qg.nodes[id].option_group_id = null;
+
     UIstate.editnodeid = id;
 
     qg_update_qnode_list();
@@ -3215,6 +3360,40 @@ function qg_remove_constraint_from_qedge(idx) {
     qg_edge(id);
 }
 
+function qg_update_optgpid_to_qgitem(what) {
+    var id = null;
+    if (what == 'qedge')
+	id = UIstate.editedgeid;
+    else if (what == 'qnode')
+	id = UIstate.editnodeid;
+    if (!id) return;
+
+    var val = document.getElementById(what+"optgpidbox").value.trim();
+    document.getElementById(what+"optgpidbox").value = '';
+    if (!val) return;
+
+    if (what == 'qedge') {
+	input_qg.edges[id]['option_group_id'] = val;
+	qg_edge(id);
+    }
+    else {
+	input_qg.nodes[id]['option_group_id'] = val;
+	qg_node(id);
+    }
+}
+function qg_remove_optgpid_from_qnode() {
+    var id = UIstate.editnodeid;
+    if (!id) return;
+    input_qg.nodes[id]['option_group_id'] = null;
+    qg_node(id);
+}
+function qg_remove_optgpid_from_qedge() {
+    var id = UIstate.editedgeid;
+    if (!id) return;
+    input_qg.edges[id]['option_group_id'] = null;
+    qg_edge(id);
+}
+
 function qg_setset_for_qnode() {
     var id = UIstate.editnodeid;
     if (!id) return;
@@ -3242,6 +3421,8 @@ function qg_edge(id) {
 	var newqedge = {};
 	newqedge.predicates = [];
 	newqedge.constraints = [];
+        newqedge.exclude = false;
+	newqedge.option_group_id = null;
 	// join last two nodes if not specified otherwise [ToDo: specify]
 	newqedge.subject = nodes[nodes.length - 2];
 	newqedge.object = nodes[nodes.length - 1];
@@ -3323,6 +3504,24 @@ function qg_edge(id) {
 	    cindex++;
 	}
     }
+
+    document.getElementById('edgeeditor_xcl').checked = input_qg.edges[id].exclude;
+
+    htmlnode = document.getElementById('edgeeditor_optgpid');
+    htmlnode.innerHTML = '';
+    if (input_qg.edges[id].option_group_id) {
+	htmlnode.appendChild(document.createTextNode(input_qg.edges[id].option_group_id));
+
+	var link = document.createElement("a");
+	link.style.float = "right";
+	link.href = 'javascript:qg_remove_optgpid_from_qedge();';
+	link.title = "remove Option Group ID from this Qedge";
+	link.appendChild(document.createTextNode(" [ remove ] "));
+	htmlnode.appendChild(link);
+    }
+    else
+	input_qg.edges[id].option_group_id = null;
+
 
     if (document.getElementById("showQGjson").checked) {
 	document.getElementById("statusdiv").innerHTML = "<pre>"+JSON.stringify(input_qg,null,2)+ "</pre>";
@@ -3407,6 +3606,14 @@ function qg_update_qedge() {
     });
     cyobj[99999].reset();
     cylayout(99999,"breadthfirst");
+}
+
+function qg_setxcl_for_qedge() {
+    var id = UIstate.editedgeid;
+    if (!id) return;
+
+    input_qg.edges[id].exclude = document.getElementById('edgeeditor_xcl').checked;
+    qg_edge(id);
 }
 
 function qg_edge_swap_obj_subj() {
@@ -3568,7 +3775,7 @@ function qg_display_edge_predicates(all) {
 
     var preds = [];
     if (all)
-	preds = Object.keys(all_predicates).sort();
+	preds = all_predicates.sort();
     else if (input_qg.nodes[obj]['categories'][0] in predicates[input_qg.nodes[subj]['categories'][0]])
 	preds = predicates[input_qg.nodes[subj]['categories'][0]][input_qg.nodes[obj]['categories'][0]].sort();
 
@@ -3612,6 +3819,7 @@ function add_nodetype_to_query_graph(nodetype) {
     tmpdata["is_set"] = false;
     tmpdata["_name"]  = null;
     tmpdata["_desc"]  = "Generic " + nodetype;
+    tmpdata["option_group_id"] = null;
     if (nodetype != 'NONSPECIFIC')
 	tmpdata["categories"] = [nodetype];
 
@@ -3623,16 +3831,24 @@ function qg_clean_up(xfer) {
     for (var nid in input_qg.nodes) {
 	var gnode = input_qg.nodes[nid];
 
-	for (var att of ["_names","_desc"] ) {
-	    if (gnode.hasOwnProperty(att))
-		delete gnode[att];
+	if (gnode.ids) {
+	    if (gnode.ids[0] == null)
+		delete gnode.ids;
+	    else if (gnode.ids.length == 1)
+		if (gnode['_names'] && gnode['_names'][0] != null)
+		    gnode.name = gnode['_names'][0];
 	}
-	if (gnode.ids && gnode.ids[0] == null)
-	    delete gnode.ids;
 	if (gnode.categories && gnode.categories[0] == null)
 	    delete gnode.categories;
 	if (gnode.constraints && gnode.constraints[0] == null)
 	    delete gnode.constraints;
+	if (gnode.option_group_id == null)
+	    delete gnode.option_group_id;
+
+	for (var att of ["_names","_desc"] ) {
+	    if (gnode.hasOwnProperty(att))
+		delete gnode[att];
+	}
     }
 
     for (var eid in input_qg.edges) {
@@ -3641,6 +3857,10 @@ function qg_clean_up(xfer) {
 	    delete gedge.predicates;
 	if (gedge.constraints && gedge.constraints[0] == null)
 	    delete gedge.constraints;
+        if (gedge.option_group_id == null)
+	    delete gedge.option_group_id;
+        if (!gedge.exclude)
+	    delete gedge.exclude;
     }
 
     if (xfer)
@@ -3769,7 +3989,7 @@ function show_dsl_command_options(command) {
 	}
         else if (araxi_commands[command].parameters[par]['type'] == 'ARAXedge') {
 	    araxi_commands[command].parameters[par]['enum'] = [];
-	    for (const p of Object.keys(all_predicates).sort()) {
+	    for (const p of all_predicates.sort()) {
 		araxi_commands[command].parameters[par]['enum'].push(p);
 	    }
 	}
@@ -4094,7 +4314,7 @@ function show_wf_operation_options(operation, index) {
 	}
 	else if (wf_operations[operation].parameters[par]['type'] == 'ARAXedge') {
 	    wf_operations[operation].parameters[par]['enum'] = [];
-	    for (const p of Object.keys(all_predicates).sort()) {
+	    for (const p of all_predicates.sort()) {
 		wf_operations[operation].parameters[par]['enum'].push(p);
 	    }
 	}
@@ -4235,12 +4455,18 @@ function abort_wf() {
     populate_wflist();
 }
 
-async function import_qg2wf(fromqg) {
+async function import_intowf(what,fromqg) {
+    if (!(what == 'query_graph' || what == 'message'))
+	return;
+
     var statusdiv = document.getElementById("statusdiv");
     statusdiv.innerHTML = '';
     statusdiv.appendChild(document.createElement("br"));
 
     if (fromqg) {
+	if (what == 'message')
+	    return;  // No
+
 	var tmpqg = JSON.stringify(input_qg); // preserve helper attributes
 	qg_clean_up(false);
 	workflow['message']['query_graph'] = input_qg;
@@ -4253,20 +4479,30 @@ async function import_qg2wf(fromqg) {
 	document.getElementById("respId").value = resp_id;
 	if (!resp_id) return;
 
-	statusdiv.appendChild(document.createTextNode("Importing query_graph from response_id = " + resp_id + " ..."));
+	statusdiv.appendChild(document.createTextNode("Importing "+what+" from response_id = " + resp_id + " ..."));
 	statusdiv.appendChild(document.createElement("br"));
 
-	var button = document.getElementById("ImportQGbutton");
+	var button = document.getElementById((what=='message'?"ImportMSGbutton":"ImportQGbutton"));
 	var wait = getAnimatedWaitBar(button.offsetWidth+"px");
 	button.parentNode.replaceChild(wait, button);
 
-	var response = await fetch(providers["ARAX"].url + "/response/" + resp_id);
+	var response;
+	if (resp_id.startsWith("http"))
+	    response = await fetch(resp_id);
+	else
+	    response = await fetch(providers["ARAX"].url + "/response/" + resp_id);
 	var respjson = await response.json();
 
-	if (respjson && respjson.message && respjson.message["query_graph"])
-	    workflow['message']['query_graph'] = respjson.message["query_graph"];
+	if (respjson && respjson.message) {
+	    if (what == 'message')
+		workflow['message'] = respjson.message;
+	    else if (respjson.message["query_graph"])
+		workflow['message']['query_graph'] = respjson.message["query_graph"];
+	    else
+		statusdiv.appendChild(document.createTextNode("No query_graph found in response_id = " + resp_id + "!!"));
+	}
 	else
-	    statusdiv.appendChild(document.createTextNode("No query_graph found in response_id = " + resp_id + "!!"));
+	    statusdiv.appendChild(document.createTextNode("No message found in response_id = " + resp_id + "!!"));
 
         wait.parentNode.replaceChild(button, wait);
     }
@@ -4280,13 +4516,14 @@ async function import_qg2wf(fromqg) {
 function load_meta_knowledge_graph() {
     var allnodes_node = document.getElementById("allnodetypes");
 
-    fetch(providers["ARAX"].url + "/meta_knowledge_graph")
-	.then(response => {
+    fetch(providers["ARAX"].url + "/meta_knowledge_graph?format=simple")
+        .then(response => {
 	    if (response.ok) return response.json();
 	    else throw new Error('Something went wrong with /meta_knowledge_graph');
 	})
         .then(data => {
-	    //add_to_dev_info("META_KNOWLEDGE_GRAPH",data);
+	    predicates = data.predicates_by_categories;
+	    all_predicates = data.supported_predicates;
 
 	    allnodes_node.innerHTML = '';
 	    var opt = document.createElement('option');
@@ -4295,63 +4532,26 @@ function load_meta_knowledge_graph() {
 	    opt.innerHTML = "Add Category to Node&nbsp;&nbsp;&nbsp;&#8675;";
 	    allnodes_node.appendChild(opt);
 
-            for (const n in data.nodes) {
+            for (const n in data.predicates_by_categories) {
 		opt = document.createElement('option');
 		opt.value = n;
 		opt.innerHTML = n;
 		allnodes_node.appendChild(opt);
-		// recreate old /predicates structure (simpler/faster lookups)
-		predicates[n] = {};
-		for (const o in data.nodes)
-		    predicates[n][o] = [];
 	    }
-            for (const e of data.edges) {
-		var bad = false;
-		if (!predicates[e.subject])
-                    bad = e.subject;
-		if (!predicates[e.object])
-		    bad = e.object;
-		if (bad) {
-                    console.warn(bad+" * not in nodes!!");
-		    continue;
-		}
-		predicates[e.subject][e.object].push(e.predicate);
-		all_predicates[e.predicate] = 1;
-	    }
-	    // clean up empty ones
-            for (var s in predicates)
-		for (var o in predicates[s])
-		    if (predicates[s][o].length < 1)
-			delete predicates[s][o];
-
-	    opt = document.createElement('option');
+            opt = document.createElement('option');
 	    opt.value = 'NONSPECIFIC';
 	    opt.innerHTML = "Unspecified/Non-specific";
-	    allnodes_node.appendChild(opt);
-
-            opt = document.createElement('option');
-	    opt.id = 'nodesetA';
-	    opt.value = 'LIST_A';
-	    opt.title = "Set of Nodes from List [A]";
-	    opt.innerHTML = "List [A]";
-	    allnodes_node.appendChild(opt);
-
-            opt = document.createElement('option');
-	    opt.id = 'nodesetB';
-	    opt.value = 'LIST_B';
-            opt.title = "Set of Nodes from List [B]";
-	    opt.innerHTML = "List [B]";
 	    allnodes_node.appendChild(opt);
 
 	    qg_display_edge_predicates(true);
 
 	    var all_preds_node = document.getElementById("fullpredicatelist");
 	    all_preds_node.innerHTML = '';
-            opt = document.createElement('option');
+	    opt = document.createElement('option');
 	    opt.value = '';
-            opt.innerHTML = "Full List of Predicates&nbsp;("+Object.keys(all_predicates).length+")&nbsp;&nbsp;&nbsp;&#8675;";
+	    opt.innerHTML = "Full List of Predicates&nbsp;("+all_predicates.length+")&nbsp;&nbsp;&nbsp;&#8675;";
 	    all_preds_node.appendChild(opt);
-            for (const p of Object.keys(all_predicates).sort()) {
+	    for (const p of all_predicates.sort()) {
 		opt = document.createElement('option');
 		opt.value = p;
 		opt.innerHTML = p;
@@ -4366,7 +4566,8 @@ function load_meta_knowledge_graph() {
 	    opt.innerHTML = "-- Error Loading Node Types --";
 	    allnodes_node.appendChild(opt);
 	    console.error(error);
-        });
+	});
+
 }
 
 function retrieveRecentQs() {
@@ -4399,7 +4600,10 @@ function retrieveRecentQs() {
 	    stats.state     = {};
 	    stats.status    = {};
 	    stats.submitter = {};
-	    stats.instance_name = {};
+	    stats.domain    = {};
+	    stats.hostname  = {};
+	    stats.instance_name  = {};
+	    stats.remote_address = {};
 	    var timeline = {};
             timeline["ISB_watchdog"] = { "data": [ { "label": 0 , "data": [] , "_qstart": new Date() } ] };
 
@@ -4416,10 +4620,17 @@ function retrieveRecentQs() {
 	    var tr = document.createElement("tr");
             tr.dataset.qstatus = "COLUMNHEADER";
 	    var td;
-	    for (var head of ["Qid","Start","Elapsed","Submitter","Instance","pid","Response","State","Status","Description"] ) {
+	    for (var head of ["Qid","Start (UTC)","Elapsed","Submitter","Remote IP","Domain","Hostname","Instance","pid","Response","State","Status","Description"] ) {
 		td = document.createElement("th")
                 if (head == "Description")
 		    td.style.textAlign = "left";
+		else
+		    td.id = 'filter_'+head.toLowerCase();
+                if (head == "Instance")
+		    td.id += '_name';
+                else if (head == "Remote IP")
+		    td.id = 'filter_remote_address';
+		td.dataset.filterstring = '';
 		td.appendChild(document.createTextNode(head));
 		tr.appendChild(td);
 	    }
@@ -4434,8 +4645,9 @@ function retrieveRecentQs() {
 		var qend = null;
 		var qdur = null;
 		var qid = null;
-		for (var field of ["query_id","start_datetime","elapsed","submitter","instance_name","pid","response_id","state","status","description"] ) {
+		for (var field of ["query_id","start_datetime","elapsed","submitter","remote_address","domain","hostname","instance_name","pid","response_id","state","status","description"] ) {
                     td = document.createElement("td");
+		    td.dataset.value = query[field];
                     if (field == "start_datetime") {
 			td.style.whiteSpace = "nowrap";
 			qstart = query[field];
@@ -4453,6 +4665,7 @@ function retrieveRecentQs() {
 			qdur = qdur.getUTCHours()+"h " + qdur.getMinutes()+"m " + qdur.getSeconds()+"s";
 		    }
                     else if (field == "state") {
+                        td.style.whiteSpace = "nowrap";
 			var span = document.createElement("span");
 			if (query[field] == "Completed") {
 			    span.innerHTML = '&check;';
@@ -4462,9 +4675,13 @@ function retrieveRecentQs() {
 			    span.innerHTML = '&cross;';
 			    span.className = 'explevel p5';
 			}
+			else if (query[field] == "Terminated") {
+			    span.innerHTML = '&cross;';
+			    span.className = 'explevel p3';
+			}
 			else {
 			    span.innerHTML = '&#10140;';
-			    span.className = 'explevel p3';
+			    span.className = 'explevel p7';
 			}
 			td.appendChild(span);
 			td.innerHTML += '&nbsp;';
@@ -4473,7 +4690,7 @@ function retrieveRecentQs() {
 			else
 			    stats.state[query[field]] = 1;
 		    }
-                    else if (field == "instance_name" || field == "submitter") {
+                    else if (field == "instance_name" || field == "submitter" || field == "remote_address" || field == "domain" || field == "hostname") {
 			td.style.whiteSpace = "nowrap";
                         if (stats[field][query[field]])
 			    stats[field][query[field]]++;
@@ -4508,8 +4725,12 @@ function retrieveRecentQs() {
                         span.style.padding = "2px 6px";
 			if (query[field] == "OK")
 			    span.className = "explevel p9";
+			else if (query[field] == "Running")
+			    span.className = "explevel p7";
 			else if (query[field] == "Reset")
 			    span.className = "explevel p5";
+			else if (query[field] == "Terminated")
+			    span.className = "explevel p3";
 			else
 			    span.className = "explevel p1";
                         span.appendChild(document.createTextNode(query[field]));
@@ -4560,11 +4781,21 @@ function retrieveRecentQs() {
 		}
 		table.appendChild(tr);
 	    }
-	    // add dummy data point to scale timeline to current time
+	    // add dummy data points to scale timeline to match requested timespan
 	    timeline["ISB_watchdog"]["data"][0]["data"].push(
 		{
 		    "timeRange": [Date.now(), Date.now()],
-		    "val": "production",
+		    "val": "ARAX",
+		    "_qid": null,
+		    "_qdur": null
+		}
+	    );
+	    var xhoursago = new Date();
+	    xhoursago.setHours(xhoursago.getHours() - hours);
+	    timeline["ISB_watchdog"]["data"][0]["data"].push(
+		{
+		    "timeRange": [xhoursago, xhoursago],
+		    "val": "ARAX",
 		    "_qid": null,
 		    "_qdur": null
 		}
@@ -4574,6 +4805,12 @@ function retrieveRecentQs() {
 	    recents_node.appendChild(table);
             recents_node.appendChild(document.createElement("br"));
 	    recents_node.appendChild(document.createElement("br"));
+
+	    for (var filterfield of ["submitter","remote_address","domain","hostname","instance_name","state","status"] ) {
+		if (Object.keys(stats[filterfield]).length > 1) {
+		    add_filtermenu(filterfield, stats[filterfield]);
+		}
+	    }
 
 	    qfspan.innerHTML = '';
 	    qfspan.appendChild(document.createTextNode("Show:"));
@@ -4675,7 +4912,76 @@ function displayQTimeline(tdata) {
 	.zQualitative(true)
 	.segmentTooltipContent(function(d) { return "Query ID: <strong>"+d.data["_qid"].toString()+"</strong><br>"+d.data["_qdur"]; } )
     (timeline_node);
+
+    timeline_node.appendChild(document.createTextNode("Your computer's local time"));
 }
+
+function add_filtermenu(field, values) {
+    var node = document.getElementById('filter_'+field);
+    //node.title = "Click to filter based on this column's values";
+    node.appendChild(document.createTextNode("\u25BC"));
+    node.className = 'filterhead';
+
+    var fmenu = document.createElement('span');
+    fmenu.className = 'filtermenu';
+
+    var vals = Object.keys(values);
+    vals.unshift('[ Show all ]');
+    for (var val of vals) {
+	var item = document.createElement('a');
+	item.appendChild(document.createTextNode(val));
+	item.setAttribute('onclick', 'filter_querytable("'+field+'","'+val+'");');
+
+	var item2 = document.createElement('span');
+	item2.id = 'filter_'+field+"_"+val;
+	item2.style.marginLeft = "10px";
+	item.appendChild(item2);
+	fmenu.appendChild(item);
+    }
+    node.appendChild(fmenu);
+}
+
+function filter_querytable(field, value) {
+    for (var item of document.querySelectorAll('[id^="filter_'+field+'_"]')) {
+	item.className = '';
+	item.innerHTML = '';
+    }
+    document.getElementById('filter_'+field+"_"+value).className = 'explevel p9';
+    document.getElementById('filter_'+field+"_"+value).innerHTML = '&check;';
+
+    if (value == '[ Show all ]') {
+	document.getElementById('filter_'+field).style.color = 'initial';
+	document.getElementById('filter_'+field).dataset.filterstring = '';
+    }
+    else {
+	document.getElementById('filter_'+field).style.color = '#291';
+	document.getElementById('filter_'+field).dataset.filterstring = value;
+    }
+
+    var trs = document.getElementById('recentqs_table').children;
+    var head = true;
+    for (var tr of trs) {
+	if (head) {
+	    head = false;
+	    continue;
+	}
+	var showrow = true;
+	for (var tdidx in tr.children) {
+	    if (!trs[0].children.hasOwnProperty(tdidx) ||
+		trs[0].children[tdidx].dataset.filterstring == '')
+		continue;
+	    if (trs[0].children[tdidx].dataset.filterstring != tr.children[tdidx].dataset.value) {
+		showrow = false;
+		break;
+	    }
+	}
+	if (showrow)
+	    tr.style.display = 'table-row';
+	else
+	    tr.style.display = 'none';
+    }
+}
+
 
 function filter_queries(tab, span, type) {
     var disp = 'none';
@@ -5020,23 +5326,24 @@ function delete_list(listId) {
 
 function check_entities_batch(batchsize) {
     var batches = [];
-    var thisbatch = '';
-    var items = 0;
+    var thisbatch = [];
     for (var entity in entities) {
 	if (entities[entity].checkHTML != '--') continue;
-	if (items == batchsize) {
+	if (thisbatch.length == batchsize) {
 	    batches.push(thisbatch);
-	    thisbatch = '';
-	    items = 0;
+	    thisbatch = [];
 	}
-	thisbatch += "&q="+entity;
-	items++;
+	thisbatch.push(entity);
     }
     // last one
     if (thisbatch) batches.push(thisbatch);
 
     for (let batch of batches) {
-        fetch(providers["ARAX"].url + "/entity?output_mode=minimal" + batch)
+	fetch(providers["ARAX"].url + "/entity", {
+	    method: 'post',
+	    body: JSON.stringify({"format":"minimal","terms":batch}),
+	    headers: { 'Content-type': 'application/json' }
+	})
 	    .then(response => response.json())
 	    .then(data => {
 		add_to_dev_info("ENTITIES:"+batch,data);
@@ -5146,7 +5453,11 @@ async function check_entity(term,wantall) {
 	data = entities[term];
     }
     else {
-	var response = await fetch(providers["ARAX"].url + "/entity?q=" + term);
+	var response = await fetch(providers["ARAX"].url + "/entity", {
+	    method: 'post',
+	    body: JSON.stringify({"terms":[term]}),
+	    headers: { 'Content-type': 'application/json' }
+	});
 	var fulldata = await response.json();
 
 	add_to_dev_info("ENTITY:"+term,fulldata);
@@ -5258,8 +5569,22 @@ function update_url(urlkey,value) {
     if (urlkey == 'timeout') {
 	var to = parseInt(document.getElementById(urlkey+"_url").value.trim());
 	if (isNaN(to))
-	    to = '';
+	    to = '30';
 	UIstate[urlkey] = to;
+	document.getElementById(urlkey+"_url").value = UIstate[urlkey];
+    }
+    else if (urlkey == 'pruning') {
+	var to = parseInt(document.getElementById(urlkey+"_url").value.trim());
+	if (isNaN(to))
+	    to = '50';
+	UIstate[urlkey] = to;
+	document.getElementById(urlkey+"_url").value = UIstate[urlkey];
+    }
+    else if (urlkey == 'maxresults') {
+        var mx = parseInt(document.getElementById(urlkey+"_url").value.trim());
+	if (isNaN(mx))
+	    mx = 1000;
+	UIstate[urlkey] = mx;
 	document.getElementById(urlkey+"_url").value = UIstate[urlkey];
     }
     else if (urlkey == 'submitter') {
@@ -5274,7 +5599,7 @@ function update_url(urlkey,value) {
     var timeout = setTimeout(function() { document.getElementById(urlkey+"_url_button").disabled = true; } , 1500 );
 }
 function update_submit_button(urlkey) {
-    var currval = (urlkey == 'submitter' || urlkey == 'timeout') ? UIstate[urlkey] : providers[urlkey].url;
+    var currval = (urlkey == 'submitter' || urlkey == 'timeout' || urlkey == 'pruning' || urlkey == 'maxresults') ? UIstate[urlkey] : providers[urlkey].url;
 
     if (currval == document.getElementById(urlkey+"_url").value)
 	document.getElementById(urlkey+"_url_button").disabled = true;
@@ -5454,4 +5779,13 @@ function dragElement(ele) {
 	document.onmouseup = null;
 	document.onmousemove = null;
     }
+}
+
+// from stackoverflow.com/questions/65824393/make-short-hash-from-long-string
+//  and gist.github.com/jlevy/c246006675becc446360a798e2b2d781
+function hashCode(s) {
+    for (var h = 0, i = 0; i < s.length; h &= h)
+	h = 31 * h + s.charCodeAt(i++);
+    //return h;
+    return new Uint32Array([h])[0].toString(36);
 }

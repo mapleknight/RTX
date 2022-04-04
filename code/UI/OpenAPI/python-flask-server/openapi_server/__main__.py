@@ -1,36 +1,44 @@
 #!/usr/bin/env python3
 
-import connexion
-import flask
+import connexion, flask, flask_cors
 import logging
-import signal
 import json
+import openapi_server.encoder
+import os, sys, signal, atexit
 
-from flask_cors import CORS
+logging.basicConfig(level=logging.INFO)  # can change this to logging.DEBUG for debuggging
 
-from openapi_server import encoder
+@atexit.register
+def ignore_sigchld():
+    logging.debug("Setting SIGCHLD to SIG_IGN before exiting")
+    signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 
-import os
-import sys
-sys.path.append(os.path.dirname(os.path.abspath(__file__))+"/../../../../ARAX/ARAXQuery")
-
+    
 def receive_sigchld(signal_number, frame):
     if signal_number == signal.SIGCHLD:
-        try:
-            os.waitpid(-1, os.WNOHANG)
-        except ChildProcessError as e:
-            print(repr(e), file=sys.stderr)
+        while True:
+            try:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+                logging.debug(f"PID returned from call to os.waitpid: {pid}")
+                if pid == 0:
+                    break
+            except ChildProcessError as e:
+                logging.debug(repr(e) + "; this is expected if there are no more child processes to reap")
+                break
 
+def receive_sigpipe(signal_number, frame):
+    if signal_number == signal.SIGPIPE:
+        logging.error("pipe error")
 
 def main():
     app = connexion.App(__name__, specification_dir='./openapi/')
-    app.app.json_encoder = encoder.JSONEncoder
+    app.app.json_encoder = openapi_server.encoder.JSONEncoder
     app.add_api('openapi.yaml',
                 arguments={'title': 'ARAX Translator Reasoner'},
                 pythonic_params=True)
-    CORS(app.app)
+    flask_cors.CORS(app.app)
     signal.signal(signal.SIGCHLD, receive_sigchld)
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    signal.signal(signal.SIGPIPE, receive_sigpipe)
 
     #### Read any load configuration details for this instance
     try:
