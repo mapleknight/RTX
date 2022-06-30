@@ -24,7 +24,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__))+"/../")
 import NodeSynonymizer.node_synonymizer as node_synonymizer
 
 
-@staticmethod
+
 def _get_neighbor_counts(results):
     """
     This function is used to get the number of neighbors for each essence in the results.
@@ -37,9 +37,11 @@ def _get_neighbor_counts(results):
     essences = [result.essence for result in results]
     syn_res = ns.get_normalizer_results(essences)
     curies = [syn_res[essence]['id']['identifier'] for essence in essences]
+    essence_to_curie = {essence: curie for essence, curie in zip(essences, curies)}
     counts = FET.query_size_of_adjacent_nodes(node_curie=curies, source_type='biolink:NamedThing',
                                               adjacent_type='biolink:NamedThing')
-    return counts[0]
+    return counts[0], essence_to_curie
+
 
 def _rerank_on_essence(response):
     """
@@ -48,20 +50,30 @@ def _rerank_on_essence(response):
     """
     # get the neighbor counts for each essence
     results = response.envelope.message.results
-    neighbor_counts = _get_neighbor_counts(results)
+    neighbor_counts, essence_to_curie = _get_neighbor_counts(results)
     total_neighbor_count = sum(neighbor_counts.values())
     # get the number of neighbors for each essence
     for result in results:
         # get the number of neighbors for the current essence
-        neighbor_count = neighbor_counts[result.essence]
-        # get the number of neighbors for the current essence
-        if neighbor_count > 0:
-            # down-weight the results that have very general essences
-            # FIXME: need a better normalization for this
-            result.score = result.score / neighbor_count
+        neighbor_count = neighbor_counts[essence_to_curie[result.essence]]
+        print(f"neighbor_count: {neighbor_count} for essence: {result.essence}")
+        # adjust the score depending on the number of neighbors
+        # Leave it alone if there aren't too many neighbors
+        if neighbor_count <= 100:
+            pass
+        # If there are too many neighbors, down-weight the result
         else:
-            result.score = 0.0
-    return self.results
+            # Something that starts just under 1 and tapers off to zero
+            max_value = 1.7
+            curve_steepness = -.0001
+            logistic_midpoint = 100
+            print(f"old score: {result.score}")
+            normalized_neighbor_score = max_value / float(1 + np.exp(-curve_steepness * (neighbor_count/2 - logistic_midpoint)))
+            print(f"normalized_neighbor_score: {normalized_neighbor_score}")
+            result.score = result.score * normalized_neighbor_score
+            print(f"new score: {result.score}")
+    results.sort(key=lambda result: result.score, reverse=True)
+    return response
 
 
 def _get_nx_edges_by_attr(G: Union[nx.MultiDiGraph, nx.MultiGraph], key: str, val: str) -> Set[tuple]:
