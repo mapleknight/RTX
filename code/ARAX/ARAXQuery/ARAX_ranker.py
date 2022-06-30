@@ -21,8 +21,47 @@ from openapi_server.models.attribute import Attribute
 
 import Overlay.fisher_exact_test as fe
 sys.path.append(os.path.dirname(os.path.abspath(__file__))+"/../")
-import NodeSynonymizer.node_synonymizer
+import NodeSynonymizer.node_synonymizer as node_synonymizer
 
+
+@staticmethod
+def _get_neighbor_counts(results):
+    """
+    This function is used to get the number of neighbors for each essence in the results.
+    :param results: a results object
+    :return: a dictionary of the form {essence_id: neighbor_count}
+    """
+    # instantiate the FET object since I want one of its methods
+    FET = fe.ComputeFTEST({}, {}, {})
+    ns = node_synonymizer.NodeSynonymizer()
+    essences = [result.essence for result in results]
+    syn_res = ns.get_normalizer_results(essences)
+    curies = [syn_res[essence]['id']['identifier'] for essence in essences]
+    counts = FET.query_size_of_adjacent_nodes(node_curie=curies, source_type='biolink:NamedThing',
+                                              adjacent_type='biolink:NamedThing')
+    return counts[0]
+
+def _rerank_on_essence(response):
+    """
+    This function modifies the response to down-weight the results that have very general essences.
+    :return:
+    """
+    # get the neighbor counts for each essence
+    results = response.envelope.message.results
+    neighbor_counts = _get_neighbor_counts(results)
+    total_neighbor_count = sum(neighbor_counts.values())
+    # get the number of neighbors for each essence
+    for result in results:
+        # get the number of neighbors for the current essence
+        neighbor_count = neighbor_counts[result.essence]
+        # get the number of neighbors for the current essence
+        if neighbor_count > 0:
+            # down-weight the results that have very general essences
+            # FIXME: need a better normalization for this
+            result.score = result.score / neighbor_count
+        else:
+            result.score = 0.0
+    return self.results
 
 
 def _get_nx_edges_by_attr(G: Union[nx.MultiDiGraph, nx.MultiGraph], key: str, val: str) -> Set[tuple]:
@@ -519,43 +558,6 @@ and [frobenius norm](https://en.wikipedia.org/wiki/Matrix_norm#Frobenius_norm).
         normalized_value = max_value / float(1+np.exp(-curve_steepness*(log_abs_value - logistic_midpoint)))
         return normalized_value
 
-    @staticmethod
-    def _get_neighbor_counts(results):
-        """
-        This function is used to get the number of neighbors for each essence in the results.
-        :param results: a results object
-        :return: a dictionary of the form {essence_id: neighbor_count}
-        """
-        # instantiate the FET object since I want one of its methods
-        FET = fe.ComputeFTEST({}, {}, {})
-        ns = node_synonymizer.NodeSynonymizer()
-        essences = [result.essence for result in results]
-        syn_res = ns.get_normalizer_results(essences)
-        curies = [syn_res[essence]['id']['identifier'] for essence in essences]
-        counts = FET.query_size_of_adjacent_nodes(node_curie=curies, source_type='biolink:NamedThing',
-                                                  adjacent_type='biolink:NamedThing')
-        return counts[0]
-
-    def _rerank_on_essence(self):
-        """
-        This function modifies the response to down-weight the results that have very general essences.
-        :return:
-        """
-        # get the neighbor counts for each essence
-        neighbor_counts = self._get_neighbor_counts(self.results)
-        # get the number of neighbors for each essence
-        for result in self.results:
-            # get the number of neighbors for the current essence
-            neighbor_count = neighbor_counts[result.essence]
-            # get the number of neighbors for the current essence
-            if neighbor_count > 0:
-                # down-weight the results that have very general essences
-                # FIXME: need a better normalization for this
-                result.score = result.score / neighbor_count
-            else:
-                result.score = 0.0
-        return self.results
-
     def aggregate_scores_dmk(self, response):
         """
         Take in a message,
@@ -713,7 +715,10 @@ def main():
     messenger = ARAXMessenger()
     if not params.local:
         print("INFO: Fetching message to work on from arax.ncats.io", flush=True)
-        message = messenger.fetch_message('https://arax.ncats.io/api/rtx/v1/message/2614')  # acetaminophen - > protein, just NGD as virtual edge
+        # New messaging system
+        response = messenger.apply_fetch_message(ARAXMessenger().message, { 'uri': 'https://arax.ncats.io/api/arax/v1.2/response/50065' })
+        message = response.message
+        #message = messenger.fetch_message('https://arax.ncats.io/api/rtx/v1/message/2614')  # acetaminophen - > protein, just NGD as virtual edge
         # message = messenger.fetch_message('https://arax.ncats.io/api/rtx/v1/message/2687')  # neutropenia -> drug, predict_drug_treats_disease and ngd
         # message = messenger.fetch_message('https://arax.ncats.io/api/rtx/v1/message/2701') # observed_expected_ratio and ngd
         # message = messenger.fetch_message('https://arax.ncats.io/api/rtx/v1/message/2703')  # a huge one with jaccard
@@ -762,7 +767,8 @@ def main():
         return
 
     # ranker.aggregate_scores(message,response=response)
-    ranker.aggregate_scores_dmk(message, response=response)
+    #ranker.aggregate_scores_dmk(message, response=response)
+    ranker.aggregate_scores_dmk(response)
 
     # Show the final result
     print(response.show(level=ARAXResponse.DEBUG))
