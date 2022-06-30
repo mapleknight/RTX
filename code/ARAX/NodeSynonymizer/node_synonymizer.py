@@ -18,7 +18,7 @@ from sri_node_normalizer import SriNodeNormalizer
 from category_manager import CategoryManager
 
 # Testing and debugging flags
-DEBUG = True
+DEBUG = False
 
 
 pathlist = os.path.realpath(__file__).split(os.path.sep)

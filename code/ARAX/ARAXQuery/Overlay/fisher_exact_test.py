@@ -34,6 +34,24 @@ class ComputeFTEST:
         self.response = response
         self.message = message
         self.parameters = parameters
+        self.is_connected = False
+
+    def connect(self):
+        if self.is_connected is False:
+            pathlist = os.path.realpath(__file__).split(os.path.sep)
+            RTXindex = pathlist.index("RTX")
+            filepath = os.path.sep.join([*pathlist[:(RTXindex + 1)], 'code', 'ARAX', 'KnowledgeSources', 'KG2c'])
+            sqlite_name = RTXConfig.kg2c_sqlite_path.split("/")[-1]
+            sqlite_file_path = f"{filepath}{os.path.sep}{sqlite_name}"
+            if os.path.exists(sqlite_file_path):
+                pass
+            else:
+                os.system(
+                    f"scp {RTXConfig.kg2c_sqlite_username}@{RTXConfig.kg2c_sqlite_host}:{RTXConfig.kg2c_sqlite_path} {sqlite_file_path}")
+            self.sqlite_file_path = sqlite_file_path
+            self.is_connected = True
+        return
+
 
     def fisher_exact_test(self):
         """
@@ -64,18 +82,7 @@ class ComputeFTEST:
         cutoff = float(self.parameters['cutoff']) if 'cutoff' in self.parameters else None
 
         ## check if the new model files exists in /predictor/retrain_data. If not, scp it from arax.ncats.io
-        pathlist = os.path.realpath(__file__).split(os.path.sep)
-        RTXindex = pathlist.index("RTX")
-        filepath = os.path.sep.join([*pathlist[:(RTXindex + 1)], 'code', 'ARAX', 'KnowledgeSources', 'KG2c'])
-
-        ## check if there is kg2c.sqlite
-        sqlite_name = RTXConfig.kg2c_sqlite_path.split("/")[-1]
-        sqlite_file_path = f"{filepath}{os.path.sep}{sqlite_name}"
-        if os.path.exists(sqlite_file_path):
-            pass
-        else:
-            os.system(f"scp {RTXConfig.kg2c_sqlite_username}@{RTXConfig.kg2c_sqlite_host}:{RTXConfig.kg2c_sqlite_path} {sqlite_file_path}")
-        self.sqlite_file_path = sqlite_file_path
+        self.connect()
 
         if rel_edge_key is not None:
             self.response.warning(f"The 'rel_edge_key' option in FET is specified, it will cause slow for the calculation of FEST test.")
@@ -458,6 +465,7 @@ class ComputeFTEST:
             # special_curie_ids = [curie_id for curie_id in query_nodes if "'" in curie_id]
 
             # Get connected to kg2c sqlite
+            self.connect()
             connection = sqlite3.connect(self.sqlite_file_path)
             cursor = connection.cursor()
 

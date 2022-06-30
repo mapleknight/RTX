@@ -81,7 +81,7 @@ def test_infer_alkaptonuria():
     query = {"operations": {"actions": [
             "create_message",
             "infer(action=drug_treatment_graph_expansion,node_curie=MONDO:0008753)",
-            "return(message=true, store=fale)"
+            "return(message=true, store=false)"
         ]}}
     [response, message] = _do_arax_query(query)
     # return response, message
