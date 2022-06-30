@@ -16,7 +16,12 @@ from RTXConfiguration import RTXConfiguration
 RTXConfig = RTXConfiguration()
 RTXConfig.live = "Production"
 sys.path.append(os.path.dirname(os.path.abspath(__file__))+"/../")
-from ARAX_query import ARAXQuery
+# There appears to be conflicting imports, as if you leave these imports in, tests will fail, but this seems ok since
+# ARAXQuery is only used for KG1
+#try:
+#    from ARAXQuery.ARAX_query import ARAXQuery
+#except ImportError:
+#    from ARAX_query import ARAXQuery
 sys.path.append(os.path.dirname(os.path.abspath(__file__))+"/../../UI/OpenAPI/python-flask-server/")
 from openapi_server.models.attribute import Attribute as EdgeAttribute
 from openapi_server.models.edge import Edge

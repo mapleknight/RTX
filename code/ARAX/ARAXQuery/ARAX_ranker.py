@@ -19,6 +19,11 @@ from openapi_server.models.result import Result
 from openapi_server.models.edge import Edge
 from openapi_server.models.attribute import Attribute
 
+import Overlay.fisher_exact_test as fe
+sys.path.append(os.path.dirname(os.path.abspath(__file__))+"/../")
+import NodeSynonymizer.node_synonymizer
+
+
 
 def _get_nx_edges_by_attr(G: Union[nx.MultiDiGraph, nx.MultiGraph], key: str, val: str) -> Set[tuple]:
     res_set = set()
@@ -513,6 +518,43 @@ and [frobenius norm](https://en.wikipedia.org/wiki/Matrix_norm#Frobenius_norm).
         logistic_midpoint = 0.15
         normalized_value = max_value / float(1+np.exp(-curve_steepness*(log_abs_value - logistic_midpoint)))
         return normalized_value
+
+    @staticmethod
+    def _get_neighbor_counts(results):
+        """
+        This function is used to get the number of neighbors for each essence in the results.
+        :param results: a results object
+        :return: a dictionary of the form {essence_id: neighbor_count}
+        """
+        # instantiate the FET object since I want one of its methods
+        FET = fe.ComputeFTEST({}, {}, {})
+        ns = node_synonymizer.NodeSynonymizer()
+        essences = [result.essence for result in results]
+        syn_res = ns.get_normalizer_results(essences)
+        curies = [syn_res[essence]['id']['identifier'] for essence in essences]
+        counts = FET.query_size_of_adjacent_nodes(node_curie=curies, source_type='biolink:NamedThing',
+                                                  adjacent_type='biolink:NamedThing')
+        return counts[0]
+
+    def _rerank_on_essence(self):
+        """
+        This function modifies the response to down-weight the results that have very general essences.
+        :return:
+        """
+        # get the neighbor counts for each essence
+        neighbor_counts = self._get_neighbor_counts(self.results)
+        # get the number of neighbors for each essence
+        for result in self.results:
+            # get the number of neighbors for the current essence
+            neighbor_count = neighbor_counts[result.essence]
+            # get the number of neighbors for the current essence
+            if neighbor_count > 0:
+                # down-weight the results that have very general essences
+                # FIXME: need a better normalization for this
+                result.score = result.score / neighbor_count
+            else:
+                result.score = 0.0
+        return self.results
 
     def aggregate_scores_dmk(self, response):
         """
