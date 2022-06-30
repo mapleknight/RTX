@@ -65,7 +65,7 @@ def _rerank_on_essence(response):
         else:
             # Something that starts just under 1 and tapers off to zero
             max_value = 1.7
-            curve_steepness = -.0001
+            curve_steepness = -.0002
             logistic_midpoint = 100
             print(f"old score: {result.score}")
             normalized_neighbor_score = max_value / float(1 + np.exp(-curve_steepness * (neighbor_count/2 - logistic_midpoint)))
